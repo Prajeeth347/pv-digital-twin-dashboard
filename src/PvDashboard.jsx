@@ -54,7 +54,6 @@ const widgetOptions = [
 const adminGroups = [
   {
     title: "Live sensor inputs",
-    description: "These values simulate the latest readings arriving from the ESP32 sensor bus.",
     fields: [
       ["voltage", "PV voltage", "V", 0.1, 0],
       ["current", "PV current", "A", 0.01, 0],
@@ -66,7 +65,6 @@ const adminGroups = [
   },
   {
     title: "Protection thresholds",
-    description: "These calibrate the digital twin and the autonomous relay decision.",
     fields: [
       ["panelArea", "Active panel area", "m2", 0.001, 0.01],
       ["criticalTemp", "Critical panel temperature", "C", 1, 35],
@@ -270,13 +268,13 @@ export default function PvDashboard() {
   function saveSettings(event) {
     event.preventDefault();
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-    setNotice("Admin Centre settings are saved on this device.");
+    setNotice("Settings saved.");
   }
 
   function resetSettings() {
     setSettings(DEFAULT_SETTINGS);
     window.localStorage.removeItem(STORAGE_KEY);
-    setNotice("Demo sensor values and thresholds have been restored.");
+    setNotice("Demo values restored.");
   }
 
   function addWidget(widgetId) {
@@ -292,9 +290,9 @@ export default function PvDashboard() {
   }
 
   const summaryCards = [
-    ["Panel Health", `${metrics.health}%`, metrics.health >= 86 ? "Healthy" : "Needs attention", metrics.health >= 86 ? "Based on temperature, efficiency, and electrical performance" : "The digital twin has detected performance stress", metrics.health < 75 ? "negative" : metrics.health < 86 ? "watch" : ""],
-    ["Power Output", `${decimal(metrics.power)} W`, `${decimal(metrics.settings.voltage)} V x ${decimal(metrics.settings.current, 2)} A`, "Calculated from the INA219 voltage and current readings", ""],
-    ["Efficiency", `${decimal(metrics.efficiency)}%`, metrics.efficiency >= 82 ? "Within range" : "Below baseline", "Calculated from irradiance and active panel area", metrics.efficiency < 70 ? "negative" : metrics.efficiency < 82 ? "watch" : ""],
+    ["Panel Health", `${metrics.health}%`, metrics.health >= 86 ? "Healthy" : "Needs attention", metrics.health >= 86 ? "Thermal and electrical condition" : "Performance stress detected", metrics.health < 75 ? "negative" : metrics.health < 86 ? "watch" : ""],
+    ["Power Output", `${decimal(metrics.power)} W`, `${decimal(metrics.settings.voltage)} V x ${decimal(metrics.settings.current, 2)} A`, "INA219 sensor reading", ""],
+    ["Efficiency", `${decimal(metrics.efficiency)}%`, metrics.efficiency >= 82 ? "Within range" : "Below baseline", "PV conversion status", metrics.efficiency < 70 ? "negative" : metrics.efficiency < 82 ? "watch" : ""],
     ["Fault Risk", metrics.risk, `${metrics.confidence}% confidence`, `${metrics.diagnosis} is the current leading diagnosis`, metrics.risk === "Critical" ? "negative" : metrics.risk === "Watch" ? "watch" : ""],
   ];
 
@@ -318,7 +316,7 @@ export default function PvDashboard() {
         <div className="controller-card">
           <span>ESP32 Status</span>
           <strong>{metrics.criticalFault ? "Protecting" : "Running"}</strong>
-          <p>{metrics.criticalFault ? "Relay isolation is active while the panel returns to a safe operating condition." : "Local TinyML model processing fused sensor data."}</p>
+          <p>{metrics.criticalFault ? "Protection active" : "Monitoring active"}</p>
         </div>
       </aside>
 
@@ -518,14 +516,12 @@ export default function PvDashboard() {
               <span>Admin Centre</span>
               <h2 id="admin-title">Configure the live digital twin</h2>
             </div>
-            <p>Changes update the dashboard immediately. Save them to keep this setup on the current device.</p>
           </div>
           <form onSubmit={saveSettings}>
             <div className="admin-groups">
               {adminGroups.map((group) => (
                 <fieldset key={group.title}>
                   <legend>{group.title}</legend>
-                  <p>{group.description}</p>
                   <div className="settings-grid">
                     {group.fields.map(([key, label, unit, step, minimum]) => (
                       <label key={key}>
@@ -541,7 +537,7 @@ export default function PvDashboard() {
               ))}
             </div>
             <div className="admin-actions">
-              <button type="button" onClick={resetSettings}>Restore demo values</button>
+              <button type="button" onClick={resetSettings}>Reset values</button>
               <button type="submit" className="save-button">Save settings</button>
             </div>
           </form>
