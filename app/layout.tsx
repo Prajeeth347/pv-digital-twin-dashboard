@@ -13,18 +13,27 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Adaptive PV Health Monitoring System",
+  metadataBase: new URL("https://prajeeth347.github.io/pv-digital-twin-dashboard/"),
+  title: "PV Digital Twin Dashboard",
   description:
-    "Explainable Edge AI and digital twin frontend for autonomous photovoltaic health monitoring and self-healing.",
+    "Adaptive Edge AI dashboard for photovoltaic health monitoring, explainable fault diagnosis, predictive maintenance, and self-healing relay control.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
   },
   openGraph: {
-    title: "Adaptive PV Health Monitoring System",
+    title: "PV Digital Twin Dashboard",
     description:
-      "A React frontend for ESP32-based PV monitoring with TinyML, XAI, digital twin visualization, and relay self-healing.",
+      "ESP32 sensor fusion, TinyML fault diagnosis, XAI explanations, and autonomous PV protection in one dashboard.",
     type: "website",
+    images: ["/og.png"],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "PV Digital Twin Dashboard",
+    description:
+      "ESP32 sensor fusion, TinyML fault diagnosis, XAI explanations, and autonomous PV protection in one dashboard.",
+    images: ["/og.png"],
   },
 };
 
