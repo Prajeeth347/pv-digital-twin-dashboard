@@ -2,39 +2,27 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-const navItems = ["Overview", "Sensors", "Faults", "Twin", "Maintenance"];
+const STORAGE_KEY = "pv-digital-twin-admin-settings";
 
-const summaryCards = [
-  ["Panel Health", "92%", "+4.8%", "Stable against adaptive baseline"],
-  ["Power Output", "168.3 W", "+12.6%", "Compared with last cloudy cycle"],
-  ["Efficiency", "84.7%", "-2.1%", "Partial shading is reducing yield"],
-  ["Fault Risk", "Low", "87%", "XAI confidence for shading"],
-];
+const DEFAULT_SETTINGS = {
+  voltage: 36.4,
+  current: 4.62,
+  panelTemp: 45.2,
+  ambientTemp: 32.6,
+  humidity: 48,
+  irradiance: 680,
+  panelArea: 0.292,
+  criticalTemp: 68,
+  nominalVoltage: 36.4,
+};
 
-const sensorRows = [
-  ["INA219", "Voltage / Current", "36.4 V", "4.62 A", "Normal"],
-  ["DS18B20", "Panel Temperature", "45.2 C", "+1.8 C drift", "Watch"],
-  ["DHT22", "Ambient / Humidity", "32.6 C", "48% RH", "Normal"],
-  ["BH1750", "Solar Irradiance", "680 W/m2", "94% stable", "Normal"],
-];
-
-const faultBars = [
-  ["Partial Shading", 61, "#1b47db"],
-  ["Dust Accumulation", 23, "#6997e4"],
-  ["Panel Aging", 18, "#b26552"],
-  ["Hotspot", 12, "#f06b5f"],
-  ["Loose Connection", 9, "#94b5e3"],
-];
-
-const componentRows = [
-  ["PV Module", "Generating DC power", "Online", "Healthy"],
-  ["Sensor Bus", "INA219, DS18B20, DHT22, BH1750", "Sampling", "Stable"],
-  ["ESP32 Controller", "TinyML inference and baseline update", "Running", "42 ms"],
-  ["XAI Engine", "Reason, confidence, corrective action", "Ready", "87%"],
-  ["IoT Cloud", "Dashboard sync and notifications", "Synced", "Live"],
-  ["Relay Driver", "Control signal amplification", "Armed", "Safe"],
-  ["Relay Module", "Panel isolation and reconnection", "ON", "Connected"],
-  ["Cleaning Unit", "Pump and motorized wiper", "Standby", "Dust mode"],
+const navItems = [
+  ["Overview", "overview"],
+  ["Sensors", "sensors"],
+  ["Faults", "faults"],
+  ["Twin", "twin"],
+  ["Maintenance", "maintenance"],
+  ["Admin Centre", "admin-centre"],
 ];
 
 const timeRanges = {
@@ -59,19 +47,41 @@ const timeRanges = {
 };
 
 const widgetOptions = [
+  ["environment", "Environmental Context"],
+  ["protection", "Self-Healing Protection"],
+];
+
+const adminGroups = [
   {
-    id: "environment",
-    title: "Environmental Context",
-    detail: "Irradiance and ambient conditions remain within the expected range.",
-    metrics: [["Irradiance", "680 W/m2"], ["Ambient", "32.6 C"], ["Humidity", "48% RH"]],
+    title: "Live sensor inputs",
+    description: "These values simulate the latest readings arriving from the ESP32 sensor bus.",
+    fields: [
+      ["voltage", "PV voltage", "V", 0.1, 0],
+      ["current", "PV current", "A", 0.01, 0],
+      ["panelTemp", "Panel temperature", "C", 0.1, -20],
+      ["ambientTemp", "Ambient temperature", "C", 0.1, -20],
+      ["humidity", "Humidity", "% RH", 1, 0],
+      ["irradiance", "Solar irradiance", "W/m2", 1, 0],
+    ],
   },
   {
-    id: "protection",
-    title: "Self-Healing Protection",
-    detail: "Relay path is armed. The panel will isolate automatically if a critical fault is detected.",
-    metrics: [["Relay", "ON"], ["Protection", "Armed"], ["Cleaning", "Standby"]],
+    title: "Protection thresholds",
+    description: "These calibrate the digital twin and the autonomous relay decision.",
+    fields: [
+      ["panelArea", "Active panel area", "m2", 0.001, 0.01],
+      ["criticalTemp", "Critical panel temperature", "C", 1, 35],
+      ["nominalVoltage", "Nominal PV voltage", "V", 0.1, 1],
+    ],
   },
 ];
+
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+function decimal(value, places = 1) {
+  return Number(value).toFixed(places);
+}
 
 function formatToday() {
   return new Intl.DateTimeFormat("en-US", {
@@ -81,21 +91,119 @@ function formatToday() {
   }).format(new Date());
 }
 
-function createExport(rangeKey) {
-  const range = timeRanges[rangeKey];
+function restoreSettings() {
+  if (typeof window === "undefined") return DEFAULT_SETTINGS;
+
+  try {
+    const savedSettings = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}");
+    return Object.fromEntries(
+      Object.entries(DEFAULT_SETTINGS).map(([key, fallback]) => {
+        const value = Number(savedSettings[key]);
+        return [key, Number.isFinite(value) ? value : fallback];
+      }),
+    );
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+function getStatusTone(status) {
+  if (["Critical", "Isolated", "Fault"].includes(status)) return "critical";
+  if (["Watch", "Recommended", "Limited"].includes(status)) return "watch";
+  return "normal";
+}
+
+function getTwinMetrics(rawSettings) {
+  const settings = Object.fromEntries(
+    Object.entries(DEFAULT_SETTINGS).map(([key, fallback]) => {
+      const value = Number(rawSettings[key]);
+      return [key, Number.isFinite(value) ? value : fallback];
+    }),
+  );
+  const power = Math.max(0, settings.voltage * settings.current);
+  const availablePower = Math.max(1, settings.irradiance * settings.panelArea);
+  const efficiency = clamp((power / availablePower) * 100, 0, 100);
+  const temperatureDelta = settings.panelTemp - settings.ambientTemp;
+  const thermalPenalty = Math.max(0, settings.panelTemp - 40) * 1.1;
+  const efficiencyPenalty = Math.max(0, 90 - efficiency) * 0.5;
+  const humidityPenalty = Math.max(0, settings.humidity - 70) * 0.2;
+  const voltagePenalty = settings.irradiance > 350
+    ? Math.max(0, settings.nominalVoltage - settings.voltage) * 2.8
+    : 0;
+  const health = Math.round(clamp(100 - thermalPenalty - efficiencyPenalty - humidityPenalty - voltagePenalty, 12, 100));
+  const criticalFault = settings.panelTemp >= settings.criticalTemp
+    || (settings.irradiance > 400 && settings.voltage < settings.nominalVoltage * 0.65)
+    || (settings.irradiance > 500 && efficiency < 45);
+  const relayOn = !criticalFault;
+  const faultBars = [
+    ["Partial Shading", clamp(Math.round(61 + (680 - settings.irradiance) * 0.12 + (85 - efficiency) * 0.35), 3, 96), "#1b47db"],
+    ["Dust Accumulation", clamp(Math.round(23 + (82 - efficiency) * 1.2 + Math.max(0, settings.humidity - 65) * 0.25), 3, 95), "#6997e4"],
+    ["Panel Aging", clamp(Math.round(18 + Math.max(0, 85 - efficiency) * 0.9), 3, 92), "#b26552"],
+    ["Hotspot", clamp(Math.round(12 + Math.max(0, settings.panelTemp - 45) * 2.5), 3, 99), "#f06b5f"],
+    ["Loose Connection", clamp(Math.round(9 + Math.max(0, settings.nominalVoltage - settings.voltage) * 9), 3, 96), "#94b5e3"],
+  ];
+  const [diagnosis, topScore] = [...faultBars].sort((a, b) => b[1] - a[1])[0];
+  const confidence = clamp(Math.round(65 + topScore * 0.36), 70, 99);
+  const risk = criticalFault ? "Critical" : health < 75 || topScore >= 82 ? "Watch" : "Low";
+  const maintenanceWindow = criticalFault ? "Immediate" : health < 75 ? "3 days" : health < 86 ? "7 days" : "14 days";
+  const panelState = criticalFault ? "Isolated" : health < 75 ? "Limited" : "Healthy";
+  const sensorRows = [
+    ["INA219", "Voltage / Current", `${decimal(settings.voltage)} V`, `${decimal(settings.current, 2)} A`, settings.voltage < settings.nominalVoltage * 0.75 ? "Watch" : "Normal"],
+    ["DS18B20", "Panel Temperature", `${decimal(settings.panelTemp)} C`, `${temperatureDelta >= 0 ? "+" : ""}${decimal(temperatureDelta)} C vs ambient`, criticalFault ? "Critical" : settings.panelTemp > 42 ? "Watch" : "Normal"],
+    ["DHT22", "Ambient / Humidity", `${decimal(settings.ambientTemp)} C`, `${decimal(settings.humidity)}% RH`, settings.humidity > 75 ? "Watch" : "Normal"],
+    ["BH1750", "Solar Irradiance", `${decimal(settings.irradiance)} W/m2`, settings.irradiance < 350 ? "Low light" : "Stable", settings.irradiance < 350 ? "Watch" : "Normal"],
+  ];
+  const componentRows = [
+    ["PV Module", "Generating DC power", relayOn ? "Online" : "Isolated", panelState],
+    ["Sensor Bus", "INA219, DS18B20, DHT22, BH1750", "Sampling", "Live"],
+    ["ESP32 Controller", "TinyML inference and baseline update", "Running", "42 ms"],
+    ["XAI Engine", "Reason, confidence, corrective action", "Ready", `${confidence}%`],
+    ["IoT Cloud", "Dashboard sync and notifications", "Synced", "Live"],
+    ["Relay Driver", "Control signal amplification", relayOn ? "Armed" : "Protecting", relayOn ? "Safe" : "Trip active"],
+    ["Relay Module", "Panel isolation and reconnection", relayOn ? "ON" : "OFF", relayOn ? "Connected" : "Panel isolated"],
+    ["Cleaning Unit", "Pump and motorized wiper", diagnosis === "Dust Accumulation" && topScore >= 55 ? "Recommended" : "Standby", diagnosis === "Dust Accumulation" ? "Dust mode" : "Ready"],
+  ];
+  const reasons = {
+    "Partial Shading": `Irradiance is ${decimal(settings.irradiance)} W/m2 and output is below the adaptive daylight baseline. Inspect the panel surface for temporary shade.`,
+    "Dust Accumulation": `Conversion efficiency is ${decimal(efficiency)}%, lower than the configured clean-panel baseline. Inspect the surface and use the cleaning unit if needed.`,
+    "Panel Aging": `The long-term efficiency pattern is below the calibrated expectation. Schedule a visual inspection during the next maintenance window.`,
+    Hotspot: `Panel temperature is ${decimal(settings.panelTemp)} C. Check for heat concentration and confirm that ventilation is unobstructed.`,
+    "Loose Connection": `PV voltage is ${decimal(settings.voltage)} V against a ${decimal(settings.nominalVoltage)} V nominal setting. Inspect terminals and cable connections.`,
+  };
+
+  return {
+    settings,
+    power,
+    efficiency,
+    health,
+    criticalFault,
+    relayOn,
+    faultBars,
+    diagnosis,
+    confidence,
+    risk,
+    maintenanceWindow,
+    sensorRows,
+    componentRows,
+    insight: reasons[diagnosis],
+    dimCells: Math.min(12, Math.max(0, Math.round((100 - health) / 4))),
+  };
+}
+
+function createExport({ range, metrics }) {
   const rows = [
     ["PV Digital Twin Report"],
     ["Range", range.label],
     ["Generated", new Date().toLocaleString()],
     [],
     ["Sensor", "Reading", "Secondary reading", "Status"],
-    ...sensorRows.map(([sensor, , primary, secondary, state]) => [sensor, primary, secondary, state]),
+    ...metrics.sensorRows.map(([sensor, , primary, secondary, state]) => [sensor, primary, secondary, state]),
     [],
     ["Fault diagnosis", "Probability"],
-    ...faultBars.map(([label, value]) => [label, `${value}%`]),
+    ...metrics.faultBars.map(([label, value]) => [label, `${value}%`]),
     [],
     ["Component", "Status", "Signal"],
-    ...componentRows.map(([component, , status, signal]) => [component, status, signal]),
+    ...metrics.componentRows.map(([component, , status, signal]) => [component, status, signal]),
   ];
   const csv = rows
     .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","))
@@ -103,7 +211,7 @@ function createExport(rangeKey) {
   const file = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(file);
-  link.download = `pv-digital-twin-${rangeKey}-report.csv`;
+  link.download = `pv-digital-twin-${range.label.toLowerCase().replaceAll(" ", "-")}-report.csv`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -115,9 +223,31 @@ export default function PvDashboard() {
   const [isRangeMenuOpen, setIsRangeMenuOpen] = useState(false);
   const [isWidgetMenuOpen, setIsWidgetMenuOpen] = useState(false);
   const [activeWidget, setActiveWidget] = useState(null);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [notice, setNotice] = useState("");
   const range = timeRanges[rangeKey];
   const today = useMemo(formatToday, []);
+  const metrics = useMemo(() => getTwinMetrics(settings), [settings]);
+  const scaledChartBars = range.chartBars.map((height) => clamp(Math.round(height * (metrics.power / 168.3)), 8, 100));
+  const widget = activeWidget === "environment"
+    ? {
+      title: "Environmental Context",
+      detail: "The digital twin is using the current solar and ambient readings in its health assessment.",
+      metrics: [["Irradiance", `${decimal(metrics.settings.irradiance)} W/m2`], ["Ambient", `${decimal(metrics.settings.ambientTemp)} C`], ["Humidity", `${decimal(metrics.settings.humidity)}% RH`]],
+    }
+    : activeWidget === "protection"
+      ? {
+        title: "Self-Healing Protection",
+        detail: metrics.relayOn
+          ? "Relay protection is armed and the panel remains connected to the load."
+          : "A critical condition has been detected. The relay has isolated the panel from the load.",
+        metrics: [["Relay", metrics.relayOn ? "ON" : "OFF"], ["Protection", metrics.relayOn ? "Armed" : "Active"], ["Panel", metrics.relayOn ? "Connected" : "Isolated"]],
+      }
+      : null;
+
+  useEffect(() => {
+    setSettings(restoreSettings());
+  }, []);
 
   useEffect(() => {
     if (!notice) return undefined;
@@ -131,16 +261,42 @@ export default function PvDashboard() {
     setNotice(`${timeRanges[nextRange].label} data is now displayed.`);
   }
 
-  function addWidget(widget) {
-    setActiveWidget(widget);
+  function updateSetting(key, nextValue) {
+    const value = Number(nextValue);
+    if (!Number.isFinite(value)) return;
+    setSettings((current) => ({ ...current, [key]: value }));
+  }
+
+  function saveSettings(event) {
+    event.preventDefault();
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    setNotice("Admin Centre settings are saved on this device.");
+  }
+
+  function resetSettings() {
+    setSettings(DEFAULT_SETTINGS);
+    window.localStorage.removeItem(STORAGE_KEY);
+    setNotice("Demo sensor values and thresholds have been restored.");
+  }
+
+  function addWidget(widgetId) {
+    setActiveWidget(widgetId);
     setIsWidgetMenuOpen(false);
-    setNotice(`${widget.title} was added to the dashboard.`);
+    const [, label] = widgetOptions.find(([id]) => id === widgetId) ?? [];
+    setNotice(`${label} was added to the dashboard.`);
   }
 
   function exportReport() {
-    createExport(rangeKey);
+    createExport({ range, metrics });
     setNotice("The CSV report has been downloaded.");
   }
+
+  const summaryCards = [
+    ["Panel Health", `${metrics.health}%`, metrics.health >= 86 ? "Healthy" : "Needs attention", metrics.health >= 86 ? "Based on temperature, efficiency, and electrical performance" : "The digital twin has detected performance stress", metrics.health < 75 ? "negative" : metrics.health < 86 ? "watch" : ""],
+    ["Power Output", `${decimal(metrics.power)} W`, `${decimal(metrics.settings.voltage)} V x ${decimal(metrics.settings.current, 2)} A`, "Calculated from the INA219 voltage and current readings", ""],
+    ["Efficiency", `${decimal(metrics.efficiency)}%`, metrics.efficiency >= 82 ? "Within range" : "Below baseline", "Calculated from irradiance and active panel area", metrics.efficiency < 70 ? "negative" : metrics.efficiency < 82 ? "watch" : ""],
+    ["Fault Risk", metrics.risk, `${metrics.confidence}% confidence`, `${metrics.diagnosis} is the current leading diagnosis`, metrics.risk === "Critical" ? "negative" : metrics.risk === "Watch" ? "watch" : ""],
+  ];
 
   return (
     <main className="analytics-shell">
@@ -154,17 +310,15 @@ export default function PvDashboard() {
         </div>
 
         <nav aria-label="Dashboard sections">
-          {navItems.map((item) => (
-            <a href={`#${item.toLowerCase()}`} key={item}>
-              {item}
-            </a>
+          {navItems.map(([label, target]) => (
+            <a href={`#${target}`} key={target}>{label}</a>
           ))}
         </nav>
 
         <div className="controller-card">
           <span>ESP32 Status</span>
-          <strong>Running</strong>
-          <p>Local TinyML model processing fused sensor data.</p>
+          <strong>{metrics.criticalFault ? "Protecting" : "Running"}</strong>
+          <p>{metrics.criticalFault ? "Relay isolation is active while the panel returns to a safe operating condition." : "Local TinyML model processing fused sensor data."}</p>
         </div>
       </aside>
 
@@ -176,24 +330,13 @@ export default function PvDashboard() {
           </div>
           <div className="toolbar" aria-label="Dashboard controls">
             <div className="toolbar-menu">
-              <button
-                type="button"
-                aria-expanded={isRangeMenuOpen}
-                aria-haspopup="menu"
-                onClick={() => setIsRangeMenuOpen((isOpen) => !isOpen)}
-              >
-                Today <span aria-hidden="true">v</span>
+              <button type="button" aria-expanded={isRangeMenuOpen} aria-haspopup="menu" onClick={() => setIsRangeMenuOpen((isOpen) => !isOpen)}>
+                {range.label} <span aria-hidden="true">v</span>
               </button>
               {isRangeMenuOpen && (
                 <div className="action-menu" role="menu" aria-label="Choose dashboard period">
                   {Object.entries(timeRanges).map(([key, value]) => (
-                    <button
-                      type="button"
-                      className={key === rangeKey ? "selected" : ""}
-                      key={key}
-                      onClick={() => selectRange(key)}
-                      role="menuitem"
-                    >
+                    <button type="button" className={key === rangeKey ? "selected" : ""} key={key} onClick={() => selectRange(key)} role="menuitem">
                       {value.label}
                     </button>
                   ))}
@@ -202,21 +345,15 @@ export default function PvDashboard() {
             </div>
             <button type="button" onClick={exportReport}>Export</button>
             <div className="toolbar-menu">
-              <button
-                type="button"
-                className="primary-button"
-                aria-expanded={isWidgetMenuOpen}
-                aria-haspopup="menu"
-                onClick={() => setIsWidgetMenuOpen((isOpen) => !isOpen)}
-              >
+              <button type="button" className="primary-button" aria-expanded={isWidgetMenuOpen} aria-haspopup="menu" onClick={() => setIsWidgetMenuOpen((isOpen) => !isOpen)}>
                 Add Widget
               </button>
               {isWidgetMenuOpen && (
                 <div className="action-menu widget-menu" role="menu" aria-label="Add a dashboard widget">
-                  {widgetOptions.map((widget) => (
-                    <button type="button" key={widget.id} onClick={() => addWidget(widget)} role="menuitem">
-                      <strong>{widget.title}</strong>
-                      <small>{widget.detail}</small>
+                  {widgetOptions.map(([id, label]) => (
+                    <button type="button" key={id} onClick={() => addWidget(id)} role="menuitem">
+                      <strong>{label}</strong>
+                      <small>{id === "environment" ? "Use live irradiance, temperature, and humidity values." : "Show the relay and panel isolation state."}</small>
                     </button>
                   ))}
                 </div>
@@ -225,16 +362,14 @@ export default function PvDashboard() {
           </div>
         </header>
 
-        <p className="date-context">Showing {range.label.toLowerCase()} data · {today}</p>
+        <p className="date-context">Showing {range.label.toLowerCase()} data - {today}</p>
 
         <section className="summary-grid" aria-label="PV health summary">
-          {summaryCards.map(([label, value, delta, note]) => (
+          {summaryCards.map(([label, value, delta, note, tone]) => (
             <article className="summary-card" key={label}>
-              <div>
-                <span>{label}</span>
-              </div>
+              <div><span>{label}</span></div>
               <strong>{value}</strong>
-              <p className={delta.startsWith("-") ? "negative" : ""}>{delta}</p>
+              <p className={tone}>{delta}</p>
               <small>{note}</small>
             </article>
           ))}
@@ -247,23 +382,17 @@ export default function PvDashboard() {
                 <span>PV Output Analytics</span>
                 <h2>Power generation trend</h2>
               </div>
-              <select
-                aria-label="Power chart range"
-                value={rangeKey}
-                onChange={(event) => selectRange(event.target.value)}
-              >
+              <select aria-label="Power chart range" value={rangeKey} onChange={(event) => selectRange(event.target.value)}>
                 <option value="today">Today</option>
                 <option value="24h">Last 24 hours</option>
                 <option value="7d">Last 7 days</option>
               </select>
             </div>
             <div className="chart-area" aria-label={`Bar chart of PV output for ${range.chartLabel}`}>
-              {range.chartBars.map((height, index) => (
-                <span key={index} style={{ height: `${height}%` }} />
-              ))}
+              {scaledChartBars.map((height, index) => <span key={index} style={{ height: `${height}%` }} />)}
               <div className="chart-tooltip">
-                <strong>168.3 W</strong>
-                <small>Peak after baseline correction</small>
+                <strong>{decimal(metrics.power)} W</strong>
+                <small>Current fused sensor reading</small>
               </div>
             </div>
             <div className="chart-labels">
@@ -277,16 +406,14 @@ export default function PvDashboard() {
                 <span>Live PV Twin</span>
                 <h2>Panel condition</h2>
               </div>
-              <b>92%</b>
+              <b>{metrics.health}%</b>
             </div>
             <div className="panel-visual" aria-label="Solar panel digital twin visual">
-              {Array.from({ length: 30 }).map((_, index) => (
-                <i key={index} className={index === 7 || index === 8 ? "dim" : ""} />
-              ))}
+              {Array.from({ length: 30 }).map((_, index) => <i key={index} className={index < metrics.dimCells ? "dim" : ""} />)}
             </div>
             <div className="twin-status">
-              <span>Relay ON</span>
-              <span>No critical fault</span>
+              <span className={metrics.relayOn ? "" : "alert"}>{metrics.relayOn ? "Relay ON" : "Relay OFF"}</span>
+              <span className={metrics.criticalFault ? "alert" : ""}>{metrics.criticalFault ? "Panel isolated" : "No critical fault"}</span>
             </div>
           </article>
 
@@ -299,13 +426,13 @@ export default function PvDashboard() {
               <b>4 active</b>
             </div>
             <div className="sensor-list">
-              {sensorRows.map(([sensor, role, primary, secondary, state]) => (
+              {metrics.sensorRows.map(([sensor, role, primary, secondary, state]) => (
                 <div key={sensor}>
                   <strong>{sensor}</strong>
                   <p>{role}</p>
                   <span>{primary}</span>
                   <span>{secondary}</span>
-                  <em className={state === "Watch" ? "watch" : ""}>{state}</em>
+                  <em className={getStatusTone(state)}>{state}</em>
                 </div>
               ))}
             </div>
@@ -317,10 +444,10 @@ export default function PvDashboard() {
                 <span>XAI Fault Diagnosis</span>
                 <h2>Root-cause probability</h2>
               </div>
-              <b>87%</b>
+              <b>{metrics.confidence}%</b>
             </div>
             <div className="fault-bars">
-              {faultBars.map(([label, value, color]) => (
+              {metrics.faultBars.map(([label, value, color]) => (
                 <div key={label}>
                   <span>{label}</span>
                   <div><i style={{ width: `${value}%`, background: color }} /></div>
@@ -328,31 +455,28 @@ export default function PvDashboard() {
                 </div>
               ))}
             </div>
-            <p className="insight">
-              XAI reason: current dropped while irradiance stayed stable. Inspect
-              the upper-right panel area for temporary shadow.
-            </p>
+            <p className="insight">XAI reason: {metrics.insight}</p>
           </article>
 
-          <article className="maintenance-card" id="maintenance">
+          <article className={`maintenance-card ${metrics.criticalFault ? "critical-maintenance" : ""}`} id="maintenance">
             <span>Predictive Maintenance</span>
-            <h2>14 days</h2>
-            <p>Estimated next inspection window based on fault history, panel temperature drift, and efficiency trend.</p>
-            <button type="button" onClick={() => setNotice("A maintenance service note is ready for review.")}>Create service note</button>
+            <h2>{metrics.maintenanceWindow}</h2>
+            <p>{metrics.criticalFault ? "The self-healing relay has isolated the panel. Inspect the condition before reconnecting the load." : `Inspection timing is based on current health, panel temperature, irradiance, and the leading XAI diagnosis: ${metrics.diagnosis}.`}</p>
+            <button type="button" onClick={() => setNotice(`Maintenance note created: ${metrics.diagnosis} - ${metrics.maintenanceWindow}.`)}>Create service note</button>
           </article>
 
-          {activeWidget && (
+          {widget && (
             <article className="widget-card">
               <div className="card-header">
                 <div>
                   <span>Added Widget</span>
-                  <h2>{activeWidget.title}</h2>
+                  <h2>{widget.title}</h2>
                 </div>
                 <button type="button" onClick={() => setActiveWidget(null)}>Remove</button>
               </div>
-              <p>{activeWidget.detail}</p>
+              <p>{widget.detail}</p>
               <div className="widget-metrics">
-                {activeWidget.metrics.map(([label, value]) => (
+                {widget.metrics.map(([label, value]) => (
                   <div key={label}>
                     <span>{label}</span>
                     <strong>{value}</strong>
@@ -369,28 +493,58 @@ export default function PvDashboard() {
               <span>System Components</span>
               <h2>Hardware and control chain</h2>
             </div>
-            <span className="sync-state">System ready</span>
+            <span className={`sync-state ${metrics.criticalFault ? "alert" : ""}`}>{metrics.criticalFault ? "Protection active" : "System ready"}</span>
           </div>
           <table>
             <thead>
-              <tr>
-                <th>Component</th>
-                <th>Purpose</th>
-                <th>Status</th>
-                <th>Signal</th>
-              </tr>
+              <tr><th>Component</th><th>Purpose</th><th>Status</th><th>Signal</th></tr>
             </thead>
             <tbody>
-              {componentRows.map(([component, purpose, status, signal]) => (
+              {metrics.componentRows.map(([component, purpose, status, signal]) => (
                 <tr key={component}>
                   <td>{component}</td>
                   <td>{purpose}</td>
-                  <td><span>{status}</span></td>
+                  <td><span className={getStatusTone(status)}>{status}</span></td>
                   <td>{signal}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </section>
+
+        <section className="admin-centre" id="admin-centre" aria-labelledby="admin-title">
+          <div className="admin-heading">
+            <div>
+              <span>Admin Centre</span>
+              <h2 id="admin-title">Configure the live digital twin</h2>
+            </div>
+            <p>Changes update the dashboard immediately. Save them to keep this setup on the current device.</p>
+          </div>
+          <form onSubmit={saveSettings}>
+            <div className="admin-groups">
+              {adminGroups.map((group) => (
+                <fieldset key={group.title}>
+                  <legend>{group.title}</legend>
+                  <p>{group.description}</p>
+                  <div className="settings-grid">
+                    {group.fields.map(([key, label, unit, step, minimum]) => (
+                      <label key={key}>
+                        <span>{label}</span>
+                        <div>
+                          <input type="number" inputMode="decimal" min={minimum} step={step} value={settings[key]} onChange={(event) => updateSetting(key, event.target.value)} />
+                          <small>{unit}</small>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              ))}
+            </div>
+            <div className="admin-actions">
+              <button type="button" onClick={resetSettings}>Restore demo values</button>
+              <button type="submit" className="save-button">Save settings</button>
+            </div>
+          </form>
         </section>
       </section>
 
